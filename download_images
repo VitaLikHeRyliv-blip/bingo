@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""Download all images from a given webpage URL.
+
+Usage:
+  1) Install dependencies:
+       pip install requests beautifulsoup4
+  2) Run:
+       python download_images.py "https://example.com" --output images
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sys
+from pathlib import Path
+from urllib.parse import urljoin, urlparse
+
+import requests
+from bs4 import BeautifulSoup
+
+
+def sanitize_filename(filename: str) -> str:
+    cleaned = re.sub(r"[^\w.\-]+", "_", filename.strip())
+    return cleaned or "image"
+
+
+def resolve_filename(image_url: str, index: int) -> str:
+    parsed = urlparse(image_url)
+    name = os.path.basename(parsed.path)
+    if not name:
+        return f"image_{index:03d}.jpg"
+    return sanitize_filename(name)
+
+
+def download_image(session: requests.Session, image_url: str, output_dir: Path, index: int) -> Path:
+    response = session.get(image_url, stream=True, timeout=15)
+    response.raise_for_status()
+    filename = resolve_filename(image_url, index)
+    destination = output_dir / filename
+    with destination.open("wb") as handle:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                handle.write(chunk)
+    return destination
+
+
+def fetch_image_urls(session: requests.Session, page_url: str) -> list[str]:
+    response = session.get(page_url, timeout=15)
+    response.raise_for_status()
+    soup = BeautifulSoup(response.text, "html.parser")
+    urls: list[str] = []
+    for tag in soup.find_all("img"):
+        src = tag.get("src")
+        if not src:
+            continue
+        urls.append(urljoin(page_url, src))
+    return urls
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Download all images from a webpage.")
+    parser.add_argument("url", help="Page URL to scan for images.")
+    parser.add_argument(
+        "--output",
+        "-o",
+        default="downloaded_images",
+        help="Directory to store downloaded images.",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    output_dir = Path(args.output)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    session = requests.Session()
+    session.headers.update({"User-Agent": "image-downloader/1.0"})
+
+    image_urls = fetch_image_urls(session, args.url)
+    if not image_urls:
+        print("No images found.")
+        return 0
+
+    for index, image_url in enumerate(image_urls, start=1):
+        try:
+            destination = download_image(session, image_url, output_dir, index)
+        except requests.RequestException as exc:
+            print(f"Failed to download {image_url}: {exc}")
+            continue
+        print(f"Saved {destination}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
